@@ -6,6 +6,7 @@ Implementation of FreeBSD filesystem mount point parsing
 import os,re,logging
 from subprocess import check_output,CalledProcessError
 
+from systematic.log import Logger,LoggerError
 from systematic.filesystems import MountPoint,FileSystemError
 
 PSEUDO_FILESYSTEM = [
