@@ -111,7 +111,7 @@ if args.clone:
         if volume.mountpoint is None:
             continue
         if args.dry_run:
-            script.message('would clone: %s@%s' % (volume.name))
+            script.message('would clone: %s' % (volume.name))
             continue
         try:
             volume.clone(backup_pool)
