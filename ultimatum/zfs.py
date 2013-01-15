@@ -17,6 +17,14 @@ class ZFSError(Exception):
     def __str__(self):
         return self.args[0]
 
+def check_cmd_output(cmd):
+    try:
+        output = check_output(cmd)
+    except CalledProcessError:
+        cmd_string = ' '.join(str(x) for x in cmd)
+        raise ZFSError('Error running command %s' % cmd_string)
+    return [x.rstrip() for x in output.split('\n') if x.strip()!='']
+
 class ZFSSnapshots(dict):
     """
     Dictionary of zfs snapshots in the system.
@@ -29,13 +37,9 @@ class ZFSSnapshots(dict):
 
     def reload(self):
         self.clear()
-        try:
-            cmd = ['zfs','list','-Ht','snapshot']
-            output = check_output(cmd)
-        except CalledProcessError:
-            raise ZFSError('Error listing snapshots with %s' % cmd)
 
-        for entry in [x.split('\t')[0] for x in output.split('\n')]:
+        cmd = ['zfs','list','-Ht','snapshot']
+        for entry in [x.split('\t')[0] for x in check_cmd_output(cmd)]:
             if entry.strip() == '': continue
             try:
                 volume,snapshot = entry.split('@',1)
@@ -64,6 +68,18 @@ class ZFSSnapshots(dict):
                     except ValueError:
                         pass
 
+class ZFSPools(list):
+    def __init__(self,snapshots=None):
+        self.log = Logger('filesystems').default_stream
+        self.snapshots = snapshots is not None and snapshots or ZFSSnapshots()
+        self.reload()
+
+    def reload(self):
+        self.__delslice__(0,len(self))
+        cmd = ['zpool','list','-H']
+        for entry in [x.split('\t') for x in check_cmd_output(cmd)]:
+            self.append(ZFSPool(entry[0],self.snapshots))
+
 class ZFSPool(list):
     """
     Abstraction for 'zpool' items in this system
@@ -76,15 +92,20 @@ class ZFSPool(list):
             self.import_pool()
         self.load()
 
+    def __repr__(self):
+        return 'zpool %s' % self.name
+
     @property
     def available(self):
         """
         Checks if the pool is available
         """
         cmd = ['zpool','list',self.name]
-        p = Popen(cmd,stdin=PIPE,stdout=PIPE,stderr=PIPE)
-        p.communicate()
-        return p.returncode==0
+        try:
+            check_cmd_output(cmd)
+        except CalledProcessError:
+            return False
+        return True
 
     def import_pool(self):
         """
@@ -92,8 +113,8 @@ class ZFSPool(list):
         """
         cmd = ['zpool','import',self.name]
         try:
-            check_output(cmd)
-        except CalledProcessError:
+            check_cmd_output(cmd)
+        except ZFSError:
             raise ZFSError('Error importing pool: %s' % self.name)
 
     def export_pool(self):
@@ -102,9 +123,9 @@ class ZFSPool(list):
         """
         cmd = ['zpool','export',self.name]
         try:
-            check_output(cmd)
-        except calledprocesserror:
-            raise zfserror('Error importing pool: %s' % self.name)
+            check_cmd_output(cmd)
+        except ZFSError:
+            raise ZFSError('Error importing pool: %s' % self.name)
 
     def load(self):
         """
@@ -113,13 +134,13 @@ class ZFSPool(list):
         self.__delslice__(0,len(self))
         cmd = ['zpool','list',self.name]
         try:
-            check_output(cmd)
-        except calledprocesserror:
-            raise zfserror('pool does not exist: %s' % self.name)
+            check_cmd_output(cmd)
+        except ZFSError:
+            raise ZFSError('pool does not exist: %s' % self.name)
 
         try:
-            output = check_output(['zfs','list','-Hd2',self.name])
-            for l in [l.strip() for l in output.split('\n')]:
+            cmd = ['zfs','list','-Hd2',self.name]
+            for l in check_cmd_output(cmd):
                 if l=='': continue
                 (vol,blocks,used,total,mountpoint) = l.split('\t')
                 self.append(ZFSVolume(self,vol,mountpoint))
@@ -180,12 +201,15 @@ class ZFSVolume(object):
         self.log = Logger('filesystems').default_stream
         self.pool = pool
         self.volume = volume
-        self.mountpoint = mountpoint!='none' and mountpoint or None
+        self.volume_mountpoint = mountpoint!='none' and mountpoint or None
 
         if self.pool.name != self.volume:
             self.name = self.volume[len(self.pool.name):].lstrip('/')
         else:
             self.name = self.volume
+
+    def __repr__(self):
+        return 'zfs volume %s' % self.volume
 
     def __cmp__(self,other):
         if isinstance(other,basestring):
@@ -208,6 +232,112 @@ class ZFSVolume(object):
         except KeyError:
             return []
 
+    @property
+    def is_mounted(self):
+        cmd = ['zfs','get','-Hp','mounted',self.volume]
+        try:
+            value = check_cmd_output(cmd)[0].split('\t')[2]
+            return value=='yes'
+        except IndexError:
+            return False
+
+    @property
+    def is_readonly(self):
+        cmd = ['zfs','get','-Hp','readonly',self.volume]
+        try:
+            value = check_cmd_output(cmd)[0].split('\t')[2]
+            return value=='on'
+        except IndexError:
+            return False
+
+    @property
+    def is_exec(self):
+        cmd = ['zfs','get','-Hp','exec',self.volume]
+        try:
+            value = check_cmd_output(cmd)[0].split('\t')[2]
+            return value=='on'
+        except IndexError:
+            return False
+
+    @property
+    def is_setuid(self):
+        cmd = ['zfs','get','-Hp','setuid',self.volume]
+        try:
+            value = check_cmd_output(cmd)[0].split('\t')[2]
+            return value=='on'
+        except IndexError:
+            return False
+
+    @property
+    def mountpoint(self):
+        cmd = ['zfs','get','-Hp','mountpoint',self.volume]
+        try:
+            value = check_cmd_output(cmd)[0].split('\t')[2]
+            return value!='none' and value or None
+        except IndexError:
+            return False
+
+    @property
+    def copies(self):
+        cmd = ['zfs','get','-Hp','copies',self.volume]
+        try:
+            return int(check_cmd_output(cmd)[0].split('\t')[2])
+        except IndexError:
+            return False
+
+    @property
+    def sync(self):
+        """
+        Return sync state: one of standard,always,disabled
+        """
+        cmd = ['zfs','get','-Hp','sync',self.volume]
+        try:
+            return check_cmd_output(cmd)[0].split('\t')[2]
+        except IndexError:
+            return False
+
+    @property
+    def sharenfs_flags(self):
+        cmd = ['zfs','get','-Hp','sharenfs',self.volume]
+        try:
+            value = check_cmd_output(cmd)[0].split('\t')[2]
+            return value!='off' and value or None
+        except IndexError:
+            return None
+
+    @property
+    def created(self):
+        cmd = ['zfs','get','-Hp','creation',self.volume]
+        try:
+            ts = int(check_cmd_output(cmd)[0].split('\t')[2])
+            return datetime.fromtimestamp(ts)
+        except IndexError:
+            return 0
+
+    @property
+    def used(self):
+        cmd = ['zfs','get','-Hp','used',self.volume]
+        try:
+            return int(check_cmd_output(cmd)[0].split('\t')[2])
+        except IndexError:
+            return 0
+
+    @property
+    def available(self):
+        cmd = ['zfs','get','-Hp','available',self.volume]
+        try:
+            return int(check_cmd_output(cmd)[0].split('\t')[2])
+        except IndexError:
+            return 0
+
+    @property
+    def reservation(self):
+        cmd = ['zfs','get','-Hp','reservation',self.volume]
+        try:
+            return int(check_cmd_output(cmd)[0].split('\t')[2])
+        except IndexError:
+            return 0
+
     def destroy_snapshot(self,tag):
         """
         Destroy a snapshot of this volume
@@ -215,8 +345,9 @@ class ZFSVolume(object):
         if tag not in self.snapshots:
             raise 'No such snapshot of %s: %s' % (self.volume,tag)
         try:
-            check_output(['zfs','destroy','%s@%s' % (self.volume,tag)])
-        except CalledProcessError:
+            cmd = ['zfs','destroy','%s@%s' % (self.volume,tag)]
+            check_cmd_output(cmd)
+        except ZFSError:
             raise ZFSError('Error destroying snapshot for %s' % self.volume)
         self.pool.reload_snapshots()
 
@@ -225,8 +356,9 @@ class ZFSVolume(object):
         Create new snapshot of this volume with given tag
         """
         try:
-            check_output(['zfs','snapshot','%s@%s' % (self.volume,tag)])
-        except CalledProcessError:
+            cmd = ['zfs','snapshot','%s@%s' % (self.volume,tag)]
+            check_cmd_output(cmd)
+        except ZFSError:
             raise ZFSError('Error creating snapshot for %s' % self.volume)
         self.pool.reload_snapshots()
 
@@ -235,8 +367,9 @@ class ZFSVolume(object):
         Rename a snapshot for this volume
         """
         try:
-            check_output(['zfs','rename','-r','%s@%s' % (self,old),'%s@%s' % (self,new)])
-        except CalledProcessError:
+            cmd = ['zfs','rename','-r','%s@%s' % (self,old),'%s@%s' % (self,new)]
+            check_cmd_output(cmd)
+        except ZFSError:
             raise ZFSError('Error renaming snapshot %s to new' % (old,new))
         self.pool.reload_snapshots()
 
@@ -265,8 +398,9 @@ class ZFSVolume(object):
             self.create_snapshot(tag)
             src_args = ['zfs','send','%s@%s' % (self.volume,tag)]
 
-        dst_args = ['zfs','receive','-Fd',backup_pool.name]
+        dst_args = ['zfs','receive','-d',backup_pool.name]
         src = Popen(src_args,stdout=PIPE)
         dst = Popen(dst_args,stdin=src.stdout,stdout=PIPE)
         output = dst.communicate()[0]
+        return dst.returncode
 
