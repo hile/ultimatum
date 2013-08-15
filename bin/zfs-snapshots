@@ -23,6 +23,7 @@ script.add_argument('--backup-pool',default='backups',help='Backup source ZFS po
 script.add_argument('--create-snapshot',help='Create snapshots for source pool')
 script.add_argument('--rename-snapshot',help='Rename snapshots in source and dst pools')
 script.add_argument('--remove-snapshot',help='Remove snapshots from source and backup pools')
+script.add_argument('--force',action='store_true',help='Force overwrite of target volume')
 script.add_argument('-y','--dry-run',action='store_true',help='Only show commands to execute')
 script.add_argument('volumes',nargs='*',help='Volumes to process')
 args = script.parse_args()
@@ -36,6 +37,8 @@ except ZFSError,emsg:
 
 if args.list_snapshots:
     for volume in source_pool:
+        if args.volumes and volume.volume not in args.volumes:
+            continue
         snapshots = volume.snapshots
         if not snapshots:
             continue
@@ -43,6 +46,8 @@ if args.list_snapshots:
 
     if backup_pool.available:
         for volume in backup_pool:
+            if args.volumes and volume.volume not in args.volumes:
+                continue
             snapshots = volume.snapshots
             if not snapshots:
                 continue
@@ -114,7 +119,7 @@ if args.clone:
             script.message('would clone: %s' % (volume.name))
             continue
         try:
-            volume.clone(backup_pool)
+            volume.clone(backup_pool,force=args.force)
         except ZFSError,emsg:
             script.message(emsg)
             continue
