@@ -96,7 +96,7 @@ class ZPool(object):
             raise ZFSError('Readonly property: %s' % property)
 
         if property in ZPOOL_PROPERTY_VALIDATORS:
-            if not ZPOOL_PROPERTY_VALUE_MAP[property](value):
+            if not ZPOOL_PROPERTY_VALIDATORS[property](value):
                 raise ZFSError('Unknown value for property %s: %s' % (property,value))
 
         if property in ZPOOL_BOOLEAN_PROPERTIES:
@@ -117,6 +117,12 @@ class ZPool(object):
     @property
     def filesystems(self):
         return [ZFS(fs) for fs in execute('zfs list -Hr -o name %s' % self.name) if fs!='']
+
+    def import_pool(self):
+        execute('zpool import %s' % self.name)
+
+    def export_pool(self):
+        execute('zpool export %s' % self.name)
 
     def create_snapshots(self,tag=None):
         if tag is None:
@@ -146,14 +152,21 @@ class ZPool(object):
 if __name__ == '__main__':
     import sys
 
+    pool = ZPool('backups')
+    if not pool.is_available:
+        try:
+            print 'Importing pool %s' % pool.name
+            pool.import_pool()
+        except ZFSError,emsg:
+            print emsg
+
+    for volume in pool.filesystems:
+        print volume
+
     try:
-        pool = ZPool('media')
-        start = datetime.strptime(sys.argv[1],SNAPSHOT_DATE_FORMAT)
-        stop = datetime.strptime(sys.argv[2],SNAPSHOT_DATE_FORMAT)
-
-        for ss in pool.filter_snapshots(start,stop):
-            print ss
-
+        print 'Exporting pool %s' % pool.name
+        pool.export_pool()
     except ZFSError,emsg:
         print emsg
-        sys.exit(1)
+
+    sys.exit(0)

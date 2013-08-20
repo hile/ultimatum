@@ -13,8 +13,6 @@ class ZFSSnapshot(list):
         	raise ZFSError('Invalid snapshot name: %s' % name)
 
     def __cmp__(self, other):
-    	print 'Comparing %s to %s' % (self, other)
-
     	if isinstance(other, basestring):
     		return cmp(self.name, other)
 
@@ -40,5 +38,9 @@ class ZFSSnapshot(list):
     	return self.__cmp__(other) != 0
 
     def __repr__(self):
-        return 'snapshot of %s tag %s' % (self.volume, self.tag)
+        return '%s@%s' % (self.volume, self.tag)
 
+    def rename(self,name):
+        if name.count('@')==0:
+            name = '%s@%s' % (self.volume, name)
+        execute('zfs rename %s %s' % (self.name, name))

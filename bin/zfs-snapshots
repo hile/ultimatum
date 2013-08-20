@@ -5,129 +5,142 @@ Script to create ZFS clone of a pool to another zpool.
 I use this to clone my humble home server to an external drive. Careful,
 this may destroy your data!
 """
-import os,sys
+
+import os
 
 from datetime import datetime
-from subprocess import check_output,CalledProcessError,Popen,PIPE
 
-from systematic.shell import Script,ScriptError
-from ultimatum.zfs import ZFSSnapshots,ZFSPool,ZFSError
+from systematic.shell import Script, ScriptError
+from ultimatum.zfs import ZFSError, SNAPSHOT_DATE_FORMAT
+from ultimatum.zfs.zpool import ZPool
+
+DEFAULT_SOURCE_POOL = 'media'
+DEFAULT_BACKUP_POOL = 'backups'
+
+DEFAULT_SNAPSHOT_NAME = datetime.now().strftime(SNAPSHOT_DATE_FORMAT)
 
 script = Script()
-script.add_argument('--clone',action='store_true',help='Clone new version')
-script.add_argument('--export',action='store_true',help='Export backup pool after cloning')
-script.add_argument('-q','--quiet',action='store_true',help='Silent operation')
-script.add_argument('--list-snapshots',action='store_true',help='List snapshots')
-script.add_argument('--source-pool',default='media',help='Backup source ZFS pool')
-script.add_argument('--backup-pool',default='backups',help='Backup source ZFS pool')
-script.add_argument('--create-snapshot',help='Create snapshots for source pool')
-script.add_argument('--rename-snapshot',help='Rename snapshots in source and dst pools')
-script.add_argument('--remove-snapshot',help='Remove snapshots from source and backup pools')
-script.add_argument('--force',action='store_true',help='Force overwrite of target volume')
-script.add_argument('-y','--dry-run',action='store_true',help='Only show commands to execute')
-script.add_argument('volumes',nargs='*',help='Volumes to process')
+script.add_argument('--clone', action='store_true', help='Clone new version')
+script.add_argument('--create-snapshot', action='store_true', help='Create snapshots for source pool')
+script.add_argument('--remove-snapshot', action='store_true', help='Remove snapshots from source and backup pools')
+script.add_argument('--list-snapshots', action='store_true', help='List snapshots')
+script.add_argument('--prepare-source-filesystems', action='store_true', help='Add base snapshots for source filesystems')
+script.add_argument('--force', action='store_true', help='Force overwrite of target filesystem')
+script.add_argument('--export', action='store_true', help='Export backup pool after cloning')
+script.add_argument('--snapshot-name', default=DEFAULT_SNAPSHOT_NAME, help='Name of snapshot')
+script.add_argument('--source-pool', default=DEFAULT_SOURCE_POOL, help='Backup source ZFS pool')
+script.add_argument('--backup-pool', default=DEFAULT_BACKUP_POOL, help='Backup backup ZFS pool')
+script.add_argument('-y', '--dry-run', action='store_true', help='Only show commands to execute')
+script.add_argument('-q', '--quiet', action='store_true', help='Silent operation')
+script.add_argument('filesystems', nargs='*', help='ZFS filesystems to process')
 args = script.parse_args()
 
 try:
-    snapshots = ZFSSnapshots()
-    source_pool = ZFSPool(args.source_pool,snapshots=snapshots)
-    backup_pool = ZFSPool(args.backup_pool,snapshots=snapshots)
-except ZFSError,emsg:
-    script.exit(1,emsg)
+    source_pool = ZPool(args.source_pool)
+except ZFSError, emsg:
+    script.exit(1, 'Error initializing source zpool object: %s' % emsg)
+
+try:
+    backup_pool = ZPool(args.backup_pool)
+except ZFSError, emsg:
+    script.exit(1, 'Error initializing backup zpool object: %s' % emsg)
 
 if args.list_snapshots:
-    for volume in source_pool:
-        if args.volumes and volume.volume not in args.volumes:
-            continue
-        snapshots = volume.snapshots
-        if not snapshots:
-            continue
-        script.message('%s\n%s' % (volume, '\n'.join('  %s' % x for x in snapshots)))
-
-    if backup_pool.available:
-        for volume in backup_pool:
-            if args.volumes and volume.volume not in args.volumes:
+    if source_pool.is_available:
+        for fs in source_pool.filesystems:
+            if args.filesystems and fs.name not in args.filesystems:
                 continue
-            snapshots = volume.snapshots
-            if not snapshots:
+
+            for snapshot in fs.snapshots:
+                script.message(snapshot)
+
+    if backup_pool.is_available:
+        for fs in backup_pool.filesystems:
+            if args.filesystems and fs.name not in args.filesystems:
                 continue
-            script.message('%s\n%s' % (volume, '\n'.join('  %s' % x for x in snapshots)))
 
-if args.create_snapshot:
-    for volume in source_pool:
-        if args.volumes and volume.volume not in args.volumes:
-            continue
-        snapshots = volume.snapshots
-        if args.create_snapshot in snapshots:
-            continue
-        if args.dry_run:
-            script.message('would create snapshot: %s@%s' % (volume,args.create_snapshot))
-            continue
-        try:
-            volume.create_snapshot(args.create_snapshot)
-            script.message('created snapshot: %s@%s' % (volume,args.create_snapshot))
-        except ZFSError,emsg:
-            script.message(emsg)
+            for snapshot in fs.snapshots:
+                script.message(snapshot)
+
+elif args.prepare_source_filesystems:
+    name = 'base'
+    for fs in source_pool.filesystems:
+        if args.filesystems and fs.name not in args.filesystems:
             continue
 
-if args.rename_snapshot:
-    try:
-        old_name,new_name = args.rename_snapshot.split(',',1)
-    except ValueError:
-        self.script.exit(1,'Argument --rename-snapshot must be of format old_name,new_name')
-    for volume in source_pool + backup_pool:
-        if args.volumes and volume.volume not in args.volumes:
-            continue
-        snapshots = volume.snapshots
-        if not old_name in snapshots:
-            continue
-        if args.dry_run:
-            script.message('would rename snapshot: %s@%s to %s@%s' % (volume,old_name,volume,new_name))
-            continue
-        try:
-            volume.rename_snapshot(old_name,new_name)
-            script.message('renamed snapshot: %s@%s to %s@%s' % (volume,old_name,volume,new_name))
-        except ZFSError,emsg:
-            script.message(emsg)
+        if fs.snapshots:
+            script.message('Filesystem has already snapshots: %s@%s' % (fs.name,tag))
             continue
 
-if args.remove_snapshot:
-    for volume in source_pool + backup_pool:
-        if args.volumes and volume.volume not in args.volumes:
-            continue
-        snapshots = volume.snapshots
-        if not args.remove_snapshot in snapshots:
-            continue
         if args.dry_run:
-            script.message('would remove snapshot: %s@%s' % (volume,args.remove_snapshot))
-            continue
-        try:
-            volume.destroy_snapshot(args.remove_snapshot)
-            script.message('removed snapshot: %s@%s' % (volume,args.remove_snapshot))
-        except ZFSError,emsg:
-            script.message(emsg)
+            script.message('would add initial snapshot: %s@%s' % (fs.name, name))
             continue
 
-if args.clone:
-    script.message('cloning zpools: %s -> %s' % (source_pool,backup_pool))
-    for volume in source_pool:
-        if args.volumes and volume.volume not in args.volumes:
-            continue
-        if volume.mountpoint is None:
-            continue
-        if args.dry_run:
-            script.message('would clone: %s' % (volume.name))
-            continue
         try:
-            volume.clone(backup_pool,force=args.force)
-        except ZFSError,emsg:
+            tag = fs.create_snapshot(name)
+            script.message('created initial snapshot: %s@%s' % (fs.name,tag))
+        except ZFSError, emsg:
             script.message(emsg)
+
+elif args.create_snapshot:
+    name = args.snapshot_name
+    for fs in source_pool.filesystems:
+        if args.filesystems and fs.name not in args.filesystems:
             continue
+
+        if name in fs.snapshots:
+            continue
+
+        if args.dry_run:
+            script.message('would create snapshot: %s@%s' % (fs.name, name))
+            continue
+
+        try:
+            tag = fs.create_snapshot(name)
+            script.message('created snapshot: %s@%s' % (fs.name,tag))
+        except ZFSError, emsg:
+            script.message(emsg)
+
+elif args.clone:
+    if not backup_pool.is_available:
+        if args.dry_run:
+            script.message('would import backup pool: %s' % (backup_pool.name))
+
+        else:
+            try:
+                script.message('Import backup pool %s' % backup_pool.name)
+                backup_pool.import_pool()
+            except ZFSError, emsg:
+                script.exit(1, 'Backup pool not available: %s' % emsg)
+
+    script.message('cloning: %s -> %s' % (source_pool, backup_pool))
+    for fs in source_pool.filesystems:
+        if args.filesystems and fs.name not in args.filesystems:
+            continue
+
+        if fs.get_property('mountpoint') is None:
+            continue
+
+        if args.dry_run:
+            script.message('would clone: %s' % (fs.name))
+            continue
+
+        try:
+            script.message('Clone %s to pool %s with tag %s' % (fs.name, backup_pool.name, args.snapshot_name))
+            fs.clone_to_pool(backup_pool, tag=args.snapshot_name, force=args.force)
+        except ZFSError, emsg:
+            script.message(emsg)
 
     if args.export:
-        try:
-            backup_pool.export_pool()
-        except ZFSError,emsg:
-            script.message(emsg)
-            sys.exit(1)
+        if args.dry_run:
+            script.message('would export backup pool: %s' % (backup_pool.name))
 
+        else:
+            try:
+                script.message('Export backup pool %s' % backup_pool.name)
+                backup_pool.export_pool()
+            except ZFSError, emsg:
+                script.exit(1, 'Error exporting pool: %s' % emsg)
+
+else:
+    script.exit(1, 'Missing operations.')
