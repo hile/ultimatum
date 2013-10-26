@@ -101,6 +101,26 @@ elif args.create_snapshot:
         except ZFSError, emsg:
             script.message(emsg)
 
+elif args.remove_snapshot:
+    name = args.snapshot_name
+
+    for fs in source_pool.filesystems:
+        if args.filesystems and fs.name not in args.filesystems:
+            continue
+
+        if name not in fs.snapshots:
+            continue
+
+        if args.dry_run:
+            script.message('would remove snapshot: %s@%s' % (fs.name, name))
+            continue
+
+        try:
+            tag = fs.remove_snapshot(name)
+            script.message('removed snapshot: %s@%s' % (fs.name,tag))
+        except ZFSError, emsg:
+            script.message(emsg)
+
 elif args.clone:
     if not backup_pool.is_available:
         if args.dry_run:
