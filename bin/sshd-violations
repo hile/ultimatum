@@ -1,0 +1,44 @@
+#!/usr/bin/env python
+"""
+Parse auth.log to retrieve invalid login attempts to SSH
+"""
+
+import argparse
+
+from systematic.shell import Script,ScriptError
+from systematic.log import LogFile,LogFileError
+
+DEFAULT_LOGFILE = '/var/log/auth.log'
+
+script = Script('sshd-violations')
+script.add_argument('-f','--file',type=argparse.FileType('r'),default=DEFAULT_LOGFILE,help='Log file path')
+script.add_argument('-l','--list',action='store_true',help='List violations sorted by IP')
+script.add_argument('-v','--verbose',action='store_true',help='List all attempted users')
+args = script.parse_args()
+
+logfile = LogFile(args.file)
+logfile.reload()
+
+unique_users = {}
+unique_ips = {}
+
+for entry in logfile.match_message('^Invalid user (?P<user>[^\s]+) from (?P<address>.*)'):
+
+    if entry['user'] not in unique_users:
+        unique_users[entry['user']] = []
+    unique_users[entry['user']].append(entry['address'])
+
+    if entry['address'] not in unique_ips:
+        unique_ips[entry['address']] = {}
+
+    usermap = unique_ips[entry['address']]
+    if entry['user'] not in usermap:
+        usermap[entry['user']] = 0
+    usermap[entry['user']] += 1
+
+if args.list:
+    for ip,names in unique_ips.items():
+        print '%-18s total %s attempts' % (ip, reduce(lambda x,y: x+y, names.values()))
+        if args.verbose:
+            for name in sorted(names.keys()):
+                print '%6d %s' % (names[name],name)
