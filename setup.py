@@ -8,7 +8,7 @@ This module is split from module to platform dependent tool
 import sys,os,glob
 from setuptools import setup
 
-VERSION='3.0.0'
+VERSION='3.2'
 README = open(os.path.join(os.path.dirname(__file__),'README.md'),'r').read()
 
 setup(
@@ -24,6 +24,6 @@ setup(
     zip_safe = False,
     packages = ['ultimatum', 'ultimatum.zfs'],
     scripts = glob.glob('bin/*'),
-    install_requires = [ 'systematic>=3.0.0' ],
+    install_requires = [ 'systematic>=3.2' ],
 )
 
