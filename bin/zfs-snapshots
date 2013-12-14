@@ -143,7 +143,6 @@ elif args.command == 'clone':
     script.message('cloning: %s -> %s' % (source_pool, backup_pool))
     for fs in source_pool.filesystems:
         if args.filesystems and fs.name not in args.filesystems:
-            script.log.debug('Skip cloning from %s: no name match' % fs.name)
             continue
 
         if fs.get_property('mountpoint') is None:

@@ -128,7 +128,7 @@ class ZFS(object):
 
             value = None
 
-        if value is None:
+        if value in (None, 'none',):
             return None
 
         if value == '-' and key in ZFS_OPTIONAL_PROPERTIES:
