@@ -14,6 +14,15 @@ class ZFSSnapshot(list):
 
     def __cmp__(self, other):
     	if isinstance(other, basestring):
+            try:
+                tag = self.name.split('@')[1]
+                if tag == other:
+                    return 0
+                else:
+                    print 'No match for %s and %s' % (tag, other)
+            except IndexError:
+                pass
+
     		return cmp(self.name, other)
 
     	elif not isinstance(other,ZFSSnapshot):

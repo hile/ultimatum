@@ -1,5 +1,5 @@
 """
-ZFS API
+ZFS API for python
 """
 
 import logging
@@ -93,7 +93,12 @@ ZFS_PROPERTY_VALIDATORS = {
 ZFS_PROPERTIES = ZFS_BOOLEAN_PROPERTIES + ZFS_READONLY_PROPERTIES + ZFS_STRING_PROPERTIES
 
 class ZFS(object):
-    def __init__(self,name):
+    """ZFS filesystem object
+
+    Wrapper to manipulate a ZFS filesystem object
+
+    """
+    def __init__(self, name):
         self.name = name
 
     def __repr__(self):
@@ -101,6 +106,11 @@ class ZFS(object):
 
     @property
     def snapshots(self):
+        """List of snapshots
+
+        Returns list of existing snapshots as ZFSSnapshot objects
+
+        """
         snapshots = []
         for name in execute('zfs list -Hrt snapshot -o name %s' % self.name):
             if name == '':
@@ -112,15 +122,20 @@ class ZFS(object):
 
         return snapshots
 
-    def get_property(self,key):
+    def get_property(self, key):
+        """Return property value
+
+        Return value for a ZFS property, validated and formatted
+
+        """
         if key not in ZFS_PROPERTIES:
             raise ZFSError('Invalid property name')
 
         value = None
-        cmd = 'zfs get -H %s %s' % (key,self.name)
+        cmd = 'zfs get -H %s %s' % (key, self.name)
         for line in execute(cmd):
             try:
-                volume, field, value, flags = line.split(None,3)
+                volume, field, value, flags = line.split(None, 3)
                 if volume == self.name and field == key:
                     break
             except ValueError:
@@ -140,6 +155,11 @@ class ZFS(object):
         return value
 
     def set_property(self, key, value):
+        """Set property value
+
+        Set value for a ZFS property, validated and formatted
+
+        """
         skip_quotes="True"
         if key not in ZFS_PROPERTIES:
             raise ZFSError('Invalid property name')
@@ -149,7 +169,7 @@ class ZFS(object):
 
         if key in ZFS_PROPERTY_VALIDATORS:
             if not ZFS_PROPERTY_VALIDATORS[key](value):
-                raise ZFSError('Unknown value for property %s: %s' % (key,value))
+                raise ZFSError('Unknown value for property %s: %s' % (key, value))
 
         if key in ZFS_BOOLEAN_PROPERTIES:
             value = value and 'on' or 'off'
@@ -159,24 +179,36 @@ class ZFS(object):
             value = 'none'
 
         if skip_quotes:
-            execute(['zfs','set','%s=%s' % (key, value), self.name])
+            execute(['zfs', 'set', '%s=%s' % (key, value), self.name])
         else:
-            execute(['zfs','set','%s="%s"' % (key, value), self.name])
+            execute(['zfs', 'set', '%s="%s"' % (key, value), self.name])
 
-    def create_snapshot(self,tag=None):
+    def create_snapshot(self, tag=None):
+        """Create named snapshots
+
+        Creates a new snapshot with provided name
+
+        Raises ZFSError if named snapshot exists
+        """
         if tag is None:
             tag = datetime.now().strftime(SNAPSHOT_DATE_FORMAT)
 
-        name = '%s@%s' % (self.name,tag)
+        name = '%s@%s' % (self.name, tag)
         if name in self.snapshots:
             raise ZFSError('Snapshot already exists: %s' % name)
 
         execute('zfs snapshot %s' % name)
         return tag
 
-    def remove_snapshot(self,value):
+    def remove_snapshot(self, value):
+        """Remove existing snapshot
+
+        Remove a existing snapshot matching provided name
+
+        Raises ZFSError if provided snapshot did not exist
+        """
         if isinstance(value, basestring):
-            name = '%s@%s' % (self.name,value)
+            name = '%s@%s' % (self.name, value)
             if name not in self.snapshots:
                 raise ZFSError('No such snapshot: %s' % name)
         elif isinstance(value, ZFSSnapshot):
@@ -184,12 +216,28 @@ class ZFS(object):
 
         execute('zfs destroy %s' % name)
 
-    def filter_snapshots(self,start,stop,date_format=SNAPSHOT_DATE_FORMAT):
+    def get_snapshot(self, name):
+        """Lookup snapshot by name
+
+        Return snapshot by name, or None if snapshot was not defined
+
+        """
+        for snapshot in self.snapshots:
+            if snapshot.name == name:
+                return snapshot
+        return None
+
+    def filter_snapshots(self, start, stop, date_format=SNAPSHOT_DATE_FORMAT):
+        """Filter snapshots by date
+
+        Retrun list of snapshots matching start and stop date ranges in name
+
+        """
         try:
-            if not isinstance(start,datetime):
-                start = datetime.strptime(start,date_format)
-            if not isinstance(stop,datetime):
-                stop = datetime.strptime(stop,date_format)
+            if not isinstance(start, datetime):
+                start = datetime.strptime(start, date_format)
+            if not isinstance(stop, datetime):
+                stop = datetime.strptime(stop, date_format)
 
         except ValueError, emsg:
             raise ZFSError('Filter dates do not match default date format: %s' % SNAPSHOT_DATE_FORMAT)

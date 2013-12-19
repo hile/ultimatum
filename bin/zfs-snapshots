@@ -148,8 +148,15 @@ elif args.command == 'clone':
         if fs.get_property('mountpoint') is None:
             continue
 
+        if args.snapshot and args.snapshot in fs.snapshots:
+            script.message('Snapshot already exists: %s@%s' % (fs.name,args.snapshot))
+            continue
+
+        if fs.name in backup_pool.filesystems:
+            script.message('Target pool filesystem already exists: %s' % fs.name)
+
         if args.dry_run:
-            script.message('would clone: %s' % (fs.name))
+            script.message('Would clone: %s' % (fs.name))
             continue
 
         try:
