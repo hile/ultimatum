@@ -24,6 +24,6 @@ setup(
     zip_safe = False,
     packages = ['ultimatum', 'ultimatum.zfs'],
     scripts = glob.glob('bin/*'),
-    install_requires = [ 'systematic>=3.2' ],
+    install_requires = [ 'systematic>=4.0.2' ],
 )
 
