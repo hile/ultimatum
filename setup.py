@@ -5,10 +5,13 @@ Scripts and system tool wrappers for FreeBSD (and other *BSDs)
 This module is split from module to platform dependent tool
 """
 
-import sys,os,glob
+import sys
+import os
+import glob
+
 from setuptools import setup
 
-VERSION='3.2'
+VERSION='4.0.2'
 README = open(os.path.join(os.path.dirname(__file__),'README.md'),'r').read()
 
 setup(
@@ -24,6 +27,9 @@ setup(
     zip_safe = False,
     packages = ['ultimatum', 'ultimatum.zfs'],
     scripts = glob.glob('bin/*'),
-    install_requires = [ 'systematic>=4.0.2' ],
+    install_requires = (
+        'seine>=2.3.0',
+        'systematic>=4.0.2',
+    ),
 )
 

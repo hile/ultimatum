@@ -5,6 +5,7 @@ Parse auth.log to retrieve invalid login attempts to SSH
 
 import argparse
 
+from seine.whois.arin import ARINReverseIPQuery, WhoisError
 from systematic.shell import Script, ScriptCommand, ScriptError
 from systematic.log import LogFile, LogFileError
 
@@ -38,17 +39,46 @@ class ListCommand(SSHLoginsCommand):
                     usermap[entry['user']] = 0
                 usermap[entry['user']] += 1
 
-        for ip in sorted(unique_ips.keys(), lambda b, a: cmp(
-                                                reduce(lambda x,y: x+y, unique_ips[a].values()),
-                                                reduce(lambda x,y: x+y, unique_ips[b].values()),
+        def import_entry(target, ip):
+            target['ips'].append(ip)
+            for user, count in unique_ips[ip].items():
+                target['total'] += count
+                if user not in target['names']:
+                    target['names'][user] = 0
+                target['names'][user] += count
+
+        netblock_matches = {}
+        for ip in unique_ips.keys():
+            found = False
+            for netblock in netblock_matches.keys():
+                if netblock.match(ip):
+                    import_entry(netblock_matches[ip_block], ip)
+                    found = True
+                    break
+
+            if not found:
+                try:
+                    ip_block = ARINReverseIPQuery(ip)
+                except WhoisError, emsg:
+                    script.exit(1, 'Error looking up %s: %s' % (ip, emsg))
+                netblock_matches[ip_block] = { 'ips': [], 'total': 0, 'names': {} }
+                import_entry(netblock_matches[ip_block], ip)
+
+        for ip_block in sorted(netblock_matches.keys(), lambda b, a: cmp(
+                                                netblock_matches[a]['total'],
+                                                netblock_matches[b]['total'],
                                             )):
 
-            names = unique_ips[ip]
-            print '%-18s total %s attempts' % (ip, reduce(lambda x,y: x+y, names.values()))
+            print '%-18s total %s attempts from %d IPs' % (
+                ' '.join('%s' % x.network for x in ip_block),
+                netblock_matches[ip_block]['total'],
+                len(netblock_matches[ip_block]['ips'])
+            )
 
             if args.verbose:
-                for name in sorted(names.keys()):
-                    print '%6d %s' % (names[name],name)
+                names = set(netblock_matches[ip_block]['names'])
+                for name in set(netblock_matches[ip_block]['names']):
+                    print '%6d %s' % (netblock_matches[ip_block]['names'][name], name)
 
 script = Script()
 
