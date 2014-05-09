@@ -9,7 +9,7 @@ import sys
 import os
 import glob
 
-from setuptools import setup
+from setuptools import setup, find_packages
 
 VERSION='4.0.2'
 README = open(os.path.join(os.path.dirname(__file__),'README.md'),'r').read()
@@ -25,7 +25,7 @@ setup(
     url = 'http://tuohela.net/packages/ultimatum',
     license = 'PSF',
     zip_safe = False,
-    packages = ['ultimatum', 'ultimatum.zfs'],
+    packages = find_packages(),
     scripts = glob.glob('bin/*'),
     install_requires = (
         'seine>=2.3.0',

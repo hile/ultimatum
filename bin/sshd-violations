@@ -5,6 +5,9 @@ Parse auth.log to retrieve invalid login attempts to SSH
 
 import argparse
 
+from datetime import datetime, timedelta
+
+from ultimatum.logformats.auth import SSHViolationsDatabase
 from seine.whois.arin import ARINReverseIPQuery, WhoisError
 from systematic.shell import Script, ScriptCommand, ScriptError
 from systematic.log import LogFile, LogFileError
@@ -12,78 +15,47 @@ from systematic.log import LogFile, LogFileError
 DEFAULT_LOGFILE = '/var/log/auth.log'
 
 class SSHLoginsCommand(ScriptCommand):
-    pass
+    def __init__(self, *args, **kwargs):
+        ScriptCommand.__init__(self, *args, **kwargs)
+        self.database = SSHViolationsDatabase()
+
+
+class UpdateCommand(SSHLoginsCommand):
+    def run(self, args):
+        self.database.update()
+
 
 class ListCommand(SSHLoginsCommand):
     def run(self, args):
+        address = None
+        if args.minutes:
+            start = datetime.now() - timedelta(minutes=args.minutes)
+        else:
+            start = None
 
-        unique_users = {}
-        unique_ips = {}
+        for entry in self.database.login_attempts(start=start):
+            if entry['address'] != address:
+                entry['netblocks'] = ' '.join('%s' % x for x in entry['netblocks'])
+                self.script.message('%s %s' % (entry['address'], entry['netblocks']))
+                address = entry['address']
 
-        for path in args.files:
-            logfile = LogFile(path)
-            logfile.reload()
+            self.script.message('  %(timestamp)s %(username)s' % entry)
 
-            for entry in logfile.match_message('^Invalid user (?P<user>[^\s]+) from (?P<address>.*)'):
 
-                if entry['user'] not in unique_users:
-                    unique_users[entry['user']] = []
+class SummaryCommand(SSHLoginsCommand):
+    def run(self, args):
+        for entry in self.database.source_address_counts():
+            entry['netblocks'] = ' '.join('%s' % x for x in entry['netblocks'])
+            self.script.message('%(count)6d %(address)16s %(netblocks)16s' % entry)
 
-                unique_users[entry['user']].append(entry['address'])
-
-                if entry['address'] not in unique_ips:
-                    unique_ips[entry['address']] = {}
-
-                usermap = unique_ips[entry['address']]
-                if entry['user'] not in usermap:
-                    usermap[entry['user']] = 0
-                usermap[entry['user']] += 1
-
-        def import_entry(target, ip):
-            target['ips'].append(ip)
-            for user, count in unique_ips[ip].items():
-                target['total'] += count
-                if user not in target['names']:
-                    target['names'][user] = 0
-                target['names'][user] += count
-
-        netblock_matches = {}
-        for ip in unique_ips.keys():
-            found = False
-            for netblock in netblock_matches.keys():
-                if netblock.match(ip):
-                    import_entry(netblock_matches[ip_block], ip)
-                    found = True
-                    break
-
-            if not found:
-                try:
-                    ip_block = ARINReverseIPQuery(ip)
-                except WhoisError, emsg:
-                    script.exit(1, 'Error looking up %s: %s' % (ip, emsg))
-                netblock_matches[ip_block] = { 'ips': [], 'total': 0, 'names': {} }
-                import_entry(netblock_matches[ip_block], ip)
-
-        for ip_block in sorted(netblock_matches.keys(), lambda b, a: cmp(
-                                                netblock_matches[a]['total'],
-                                                netblock_matches[b]['total'],
-                                            )):
-
-            print '%-18s total %s attempts from %d IPs' % (
-                ' '.join('%s' % x.network for x in ip_block),
-                netblock_matches[ip_block]['total'],
-                len(netblock_matches[ip_block]['ips'])
-            )
-
-            if args.verbose:
-                names = set(netblock_matches[ip_block]['names'])
-                for name in set(netblock_matches[ip_block]['names']):
-                    print '%6d %s' % (netblock_matches[ip_block]['names'][name], name)
 
 script = Script()
-
-c = script.add_subcommand(ListCommand('list', 'List invalid logins'))
-c.add_argument('-v', '--verbose', action='store_true', help='List all attempted users')
+c = script.add_subcommand(UpdateCommand('update', 'Update list of SSH login attempts'))
 c.add_argument('files', nargs='*', help='Log file paths to process')
+
+c = script.add_subcommand(SummaryCommand('summary', 'Summary of login attempts'))
+
+c = script.add_subcommand(ListCommand('list', 'List login attempts'))
+c.add_argument('--minutes', type=int, help='List entries for last n minutes')
 
 args = script.parse_args()
