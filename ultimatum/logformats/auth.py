@@ -3,10 +3,22 @@ import re
 import os
 import glob
 
-from seine.address import IPv4Address, IPv6Address
+from seine.address import IPv4Address, IPv6Address, parse_address
 from seine.whois.arin import ARINReverseIPQuery, WhoisError
 from systematic.log import LogEntry, LogFile, LogFileCollection, LogFileError
 from systematic.sqlite import SQLiteDatabase, SQLiteError
+
+SSH_LOGINS = [
+    re.compile('^Accepted publickey for (?P<user>[^\s]+) from (?P<address>.*) ' +
+        'port (?P<port>\d+) (?P<sshversion>.*): (?P<keytype>.*) (?P<key>.*)$'
+    ),
+]
+SSH_ATTEMPTS = [
+    re.compile('^Invalid user (?P<user>[^\s]+) from (?P<address>.*)'),
+    re.compile('^Failed publickey for (?P<user>[^\s]+) from (?P<address>.*) ' +
+        'port (?P<port>\d+) (?P<sshversion>.*) (?P<keytype>.*) (?P<fingerprint>.*)$'
+    ),
+]
 
 SSHD_VIOLATIONS_DATABASE_PATH = '/var/lib/ssh/violations.db'
 SQL_TABLES = [
@@ -39,11 +51,54 @@ SQL_TABLES = [
 
 
 class AuthLogEntry(LogEntry):
-    pass
+    def __init__(self, *args, **kwargs):
+        LogEntry.__init__(self, *args, **kwargs)
 
 
 class AuthLogFile(LogFile):
     lineloader = AuthLogEntry
+    def __init__(self, *args, **kwargs):
+        LogFile.__init__(self, *args, **kwargs)
+
+        self.register_iterator('failures')
+        self.register_iterator('logins')
+
+    def __match_failed__(self, entry):
+        for matcher in SSH_ATTEMPTS:
+            m = matcher.match(entry.message)
+            if m:
+                details = m.groupdict()
+                entry.update_message_fields(details)
+                return True
+
+        return False
+
+    def __match_login__(self, entry):
+        for matcher in SSH_LOGINS:
+            m = matcher.match(entry.message)
+            if m:
+                details = m.groupdict()
+                if 'port' in details:
+                    details['port'] = int(details['port'])
+                details['address'] = parse_address(details['address'])
+                entry.update_message_fields(details)
+                return True
+
+        return False
+
+    def next_failed(self):
+        return self.next_iterator_match('failures', callback=self.__match_failed__)
+
+    def next_login(self):
+        return self.next_iterator_match('logins', callback=self.__match_login__)
+
+    @property
+    def failures(self):
+        return iter(self.next_failed, None)
+
+    @property
+    def logins(self):
+        return iter(self.next_login, None)
 
 
 class AuthLogCollection(LogFileCollection):
@@ -89,7 +144,8 @@ class SSHViolationsDatabase(SQLiteDatabase):
         if r is not None:
             return None
 
-        c.execute("""INSERT INTO registration (version, handle, comment, registered, updated) VALUES (?,?,?,?,?)""",
+        c.execute("""INSERT INTO registration (version, handle, comment, registered, updated) """ +
+            """VALUES (?,?,?,?,?)""",
             (ref.version, ref.handle, ref.comment, ref.registered, ref.updated, )
         )
         self.commit()
@@ -99,7 +155,8 @@ class SSHViolationsDatabase(SQLiteDatabase):
 
         for netblock in ref:
             if isinstance(netblock.network, IPv4Address):
-                c.execute("""INSERT INTO netblock (registration, description, network, start, end) VALUES (?,?,?,?,?)""",
+                c.execute("""INSERT INTO netblock (registration, description, network, start, end) """ +
+                    """VALUES (?,?,?,?,?)""",
                     (
                         ref_id,
                         netblock.description,
@@ -148,24 +205,24 @@ class SSHViolationsDatabase(SQLiteDatabase):
 
         for path in paths:
             log = AuthLogFile(path)
-            for entry in log:
-                m = matcher.match(entry.message)
-                if not m:
-                    continue
-
+            for entry in log.failures:
                 details = {
                     'timestamp': entry.time,
-                    'address': m.groupdict()['address'],
-                    'username': m.groupdict()['user'],
+                    'address': entry.message_fields['address'],
+                    'username': entry.message_fields['user'],
                 }
 
                 ref = self.lookup_registration_id(details['address'])
                 if ref is not None:
                     details['registration'] = ref
-                else:
+
+                elif isinstance(details['address'], IPv4Address):
                     self.log.debug('ARIN LOOKUP %s' % details['address'])
                     ref = ARINReverseIPQuery(details['address'])
                     details['registration'] = self.add_netblock(ref)
+
+                else:
+                    details['registration'] = None
 
                 self.add(**details)
 
@@ -202,14 +259,19 @@ class SSHViolationsDatabase(SQLiteDatabase):
 
     def source_address_counts(self):
         c = self.cursor
-        c.execute("""SELECT COUNT(DISTINCT timestamp) AS count, registration, address FROM login GROUP BY address ORDER BY -count""")
+        c.execute("""SELECT COUNT(DISTINCT timestamp) AS count, registration, address """ +
+            """FROM login GROUP BY address ORDER BY -count"""
+        )
         return self.map_netblocks([self.as_dict(c,r) for r in c.fetchall()])
 
     def login_attempts(self, start=None):
         c = self.cursor
 
         if start is not None:
-            c.execute("""SELECT * FROM login WHERE timestamp >= Datetime(?) ORDER BY timestamp""", (start,))
+            c.execute("""SELECT * FROM login WHERE timestamp >= Datetime(?) """ +
+                """ORDER BY timestamp""",
+                (start,)
+            )
         else:
             c.execute("""SELECT * FROM login ORDER BY timestamp""")
 

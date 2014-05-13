@@ -28,8 +28,8 @@ setup(
     packages = find_packages(),
     scripts = glob.glob('bin/*'),
     install_requires = (
-        'seine>=2.3.0',
-        'systematic>=4.0.2',
+        'seine>=2.4.1',
+        'systematic>=4.0.5',
     ),
 )
 
