@@ -18,7 +18,23 @@ SSH_ATTEMPTS = [
     re.compile('^Failed publickey for (?P<user>[^\s]+) from (?P<address>.*) ' +
         'port (?P<port>\d+) (?P<sshversion>.*) (?P<keytype>.*) (?P<fingerprint>.*)$'
     ),
+    re.compile('^error: Received disconnect from (?P<address>[^:+]):.*: Auth fail [preauth]'),
 ]
+
+
+SSH_CONNECT = re.compile('^Connection from (?P<address>[^\s]+) port (?P<port>\d+)$')
+SSH_ACCEPT_PUBLICKEY = re.compile('^%s$' % ' '.join([
+    'Accepted publickey for (?P<username>[^\s]+)',
+    'from (?P<address>[^\s]+)',
+    'port (?P<port>\d+)',
+    '(?P<version>[^:]+):',
+    '(?P<keytype>[^\s]+)',
+    '(?P<fingerprint>.*)'
+]))
+
+SSH_LOGIN = re.compile('User child is on pid (?P<pid>\d+)$')
+SSH_DISCONNECT = re.compile('Received disconnect from (?P<address>[^\s]+): .*: disconnected by user')
+SSH_INVALID_USER = re.compile('^Invalid user (?P<username>.*) from (?P<address>[^\s]+)$')
 
 SSHD_VIOLATIONS_DATABASE_PATH = '/var/lib/ssh/violations.db'
 SQL_TABLES = [
@@ -50,15 +66,127 @@ SQL_TABLES = [
 ]
 
 
+class SSHSession(list):
+    def __init__(self, sessioncache, entry, pid=None, parent=None, timeout=60):
+        self.sessioncache = sessioncache
+        self.pid = pid is not None and pid or entry.pid
+        self.timeout = timeout
+        self.parent = parent
+        self.info = {}
+
+        self.append(entry)
+
+    def __repr__(self):
+        return self.pid
+
+    def append(self, entry):
+        if len(self) == 0:
+            self.state = 'init'
+        list.append(self, entry)
+
+        m = SSH_CONNECT.match(entry.message)
+        if m:
+            self.state = 'connect'
+            self.info['src_address'] = m.groupdict()['address']
+            self.info['src_port'] = m.groupdict()['port']
+            return
+
+        m = SSH_ACCEPT_PUBLICKEY.match(entry.message)
+        if m:
+            self.state = 'accepted_publickey'
+            details = m.groupdict()
+            for k in ( 'username', 'version', 'keytype', 'fingerprint', ):
+                if k in details:
+                    self.info[k] = details[k]
+                else:
+                    self.info[k] = 'MISSING KEY INFO %s' % k
+            return
+
+        m = SSH_LOGIN.match(entry.message)
+        if m:
+            if self.parent is not None:
+                self.state = 'user_session'
+                self.info['parent_pid'] = self.parent.pid
+                self.info.update(self.parent.info.items())
+            else:
+                self.state = 'login'
+                usersession_pid = m.groupdict()['pid']
+                if usersession_pid != self.pid:
+                    self.sessioncache.append(SSHSession(self.sessioncache, entry, pid=usersession_pid, parent=self))
+            return
+
+        m = SSH_DISCONNECT.match(entry.message)
+        if m:
+            self.state = 'logout'
+            if len(self) > 0:
+                self.info['session_length'] = (entry.time - self[0].time).total_seconds()
+            return
+
+        m = SSH_INVALID_USER.match(entry.message)
+        if m:
+            self.state = 'invalid_user'
+            self.info['username'] = m.groupdict()['username']
+            return
+
+        if entry.message == 'fatal: Read from socket failed: Connection reset by peer [preauth]':
+            self.state = 'preauth_connection_reset'
+
+        elif 'src_address' in self.info:
+            if entry.message == 'Connection closed by %s [preauth]' % self.info['src_address']:
+                self.state = 'preauth_no_key'
+
+            if entry.message == 'Received disconnect from %s: 11: Bye Bye [preauth]' % self.info['src_address']:
+                if self.state != 'invalid_user':
+                    self.state = 'preauth_disconnect'
+
+
+    def match(self, entry):
+        if entry.pid != self.pid:
+            return False
+
+        if self.state == 'user_session':
+            return True
+
+        if abs((entry.time - self[0].time).total_seconds()) >= self.timeout:
+            return False
+
+        return True
+
+
+class SSHSessionCache(dict):
+    def match(self, entry):
+        if entry.pid not in self:
+            return None
+
+        for session in self[entry.pid]:
+            if session.match(entry):
+                return session
+        return None
+
+    def append(self, session):
+        if session.pid not in self:
+            self[session.pid] = []
+        self[session.pid].append(session)
+
+
 class AuthLogEntry(LogEntry):
     def __init__(self, *args, **kwargs):
         LogEntry.__init__(self, *args, **kwargs)
 
+        if self.program == 'sshd':
+            session = self.logfile.sessioncache.match(self)
+            if session is not None:
+                session.append(self)
+            else:
+                session = SSHSession(self.logfile.sessioncache, self)
+                self.logfile.sessioncache.append(session)
 
 class AuthLogFile(LogFile):
     lineloader = AuthLogEntry
-    def __init__(self, *args, **kwargs):
+    def __init__(self, sessioncache, *args, **kwargs):
         LogFile.__init__(self, *args, **kwargs)
+
+        self.sessioncache = sessioncache
 
         self.register_iterator('failures')
         self.register_iterator('logins')
@@ -103,7 +231,9 @@ class AuthLogFile(LogFile):
 
 class AuthLogCollection(LogFileCollection):
     loader = AuthLogFile
-
+    def __init__(self, *args, **kwargs):
+        LogFileCollection.__init__(self, *args, **kwargs)
+        self.sessioncache = SSHSessionCache()
 
 class SSHViolationsDatabase(SQLiteDatabase):
     def __init__(self, path=SSHD_VIOLATIONS_DATABASE_PATH):
@@ -201,10 +331,11 @@ class SSHViolationsDatabase(SQLiteDatabase):
     def update(self, paths=None):
         matcher = re.compile('^Invalid user (?P<user>[^\s]+) from (?P<address>.*)')
         if not paths:
-            paths = glob.glob('/var/log/auth.log*')
+            auth_paths = glob.glob('/var/log/auth.log*') + glob.glob('/var/log/messages*')
 
+        sessioncache = SSHSessionCache()
         for path in paths:
-            log = AuthLogFile(path)
+            log = AuthLogFile(sessioncache, path)
             for entry in log.failures:
                 details = {
                     'timestamp': entry.time,

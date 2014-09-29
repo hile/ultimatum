@@ -29,7 +29,7 @@ setup(
     scripts = glob.glob('bin/*'),
     install_requires = (
         'seine>=2.4.1',
-        'systematic>=4.0.5',
+        'systematic>=4.2.0',
     ),
 )
 
