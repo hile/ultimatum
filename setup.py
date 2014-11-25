@@ -11,8 +11,7 @@ import glob
 
 from setuptools import setup, find_packages
 
-VERSION='4.0.5'
-README = open(os.path.join(os.path.dirname(__file__),'README.md'),'r').read()
+VERSION='4.0.6'
 
 setup(
     name = 'ultimatum',
@@ -20,7 +19,6 @@ setup(
     description = 'Sysadmin utility modules and scripts for FreeBSD',
     author = 'Ilkka Tuohela',
     author_email = 'hile@iki.fi',
-    long_description = README,
     version = VERSION,
     url = 'http://tuohela.net/packages/ultimatum',
     license = 'PSF',
